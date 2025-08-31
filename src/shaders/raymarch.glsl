@@ -23,7 +23,6 @@ vec2 rot(vec2 p, float a) {
 void main() {
   float time = iTime;
 
-  // normalized screen space
   vec2 uv = (gl_FragCoord.xy / iResolution) * 2.0 - 1.0;
   uv.x *= iResolution.x / iResolution.y;
 
@@ -38,17 +37,14 @@ void main() {
   for (int i = 0; i < 100; i++) {
     tt = map(pos + dir * t);
     if (tt < 0.001) break;
-    t += tt * 5.25;
+    t += tt * 0.45;
   }
 
   vec3 ip = pos + dir * t;
-  vec3 col = sqrt(vec3(t * 0.001));
+  vec3 col = sqrt(vec3(t * 0.1));
   float glow = max(0.0, map(ip - 0.1) - tt);
+  vec3 rgb = 0.05 * t + abs(dir) * col + glow;
 
-  vec3 rgb = 8.005 * t + abs(dir) * col + glow;
-
-  // avoid NaNs/infs if t is tiny
-  float a = 1.0 / max(1e-6, t * t * t * t);
-
+  float a = 1.0 / max(1e-6, t * t * t * t); // avoid div by 0
   gl_FragColor = vec4(rgb, a);
 }

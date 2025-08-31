@@ -30,8 +30,8 @@ export function useParallaxShadow(opts: ParallaxShadowOptions = {}) {
   const { mouseX, mouseY } = useTilt()
   const { offset, direction, tiltStrength, blur, alpha } = { ...DEF, ...opts }
 
-  const shadowX = useSpring(mouseX, { stiffness: 1000, damping: 20 })
-  const shadowY = useSpring(mouseY, { stiffness: 1000, damping: 20 })
+  // const shadowX = useSpring(mouseX, { stiffness: 1000, damping: 20 })
+  // const shadowY = useSpring(mouseY, { stiffness: 1000, damping: 20 })
 
   // Offsets react to tilt; everything else is constant
   // const offX = useTransform(
@@ -43,14 +43,8 @@ export function useParallaxShadow(opts: ParallaxShadowOptions = {}) {
   //   (v) => (direction.y + v * tiltStrength.y) * offset,
   // )
 
-  const offX = useTransform(
-    mouseX,
-    (v) => (direction.x + v * tiltStrength.x) * offset,
-  )
-  const offY = useTransform(
-    mouseY,
-    (v) => (direction.y + v * tiltStrength.y) * offset,
-  )
+  const offX = useTransform(mouseX, (v) => (direction.x + v * tiltStrength.x) * offset)
+  const offY = useTransform(mouseY, (v) => (direction.y + v * tiltStrength.y) * offset)
 
   const boxShadow = useMotionTemplate`${offX}px ${offY}px ${blur}px rgba(0,0,0,${alpha})`
   const textShadow = useMotionTemplate`${offX}px ${offY}px ${blur}px rgba(0,0,0,${alpha})`

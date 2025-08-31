@@ -21,10 +21,7 @@ type Props = {
 }
 
 export function ZLayer({ depth = 50, shadow, children }: Props) {
-  const MotionChild = React.useMemo(
-    () => motion.create(children.type as any),
-    [children.type],
-  )
+  const MotionChild = React.useMemo(() => motion.create(children.type as any), [children.type])
 
   // Compute fixed values (don’t guard the hook; keep call order stable)
   const offset = shadow?.offset ?? 0.7
@@ -35,16 +32,19 @@ export function ZLayer({ depth = 50, shadow, children }: Props) {
   const parallax = useParallaxShadow({ offset, blur, alpha })
 
   return (
-    <MotionChild
-      {...children.props}
-      style={{
-        ...(children.props.style || {}),
-        transformStyle: 'preserve-3d',
-        willChange: 'transform',
-        // Framer Motion composes this as translateZ()
-        z: depth as any,
-        ...(shadow ? { boxShadow: parallax.boxShadow as any } : null),
-      }}
-    />
+    <>
+      <div className="fixed inset-8 rounded-3xl bg-black" style={{ transformStyle: 'preserve-3d' }} />
+      <MotionChild
+        {...children.props}
+        style={{
+          ...(children.props.style || {}),
+          transformStyle: 'preserve-3d',
+          willChange: 'transform',
+          // Framer Motion composes this as translateZ()
+          z: depth as any,
+          ...(shadow ? { boxShadow: parallax.boxShadow as any } : null),
+        }}
+      />
+    </>
   )
 }

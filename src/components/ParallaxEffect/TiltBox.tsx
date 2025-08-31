@@ -85,9 +85,7 @@ const DEF_LIFT_SPRING: Required<SpringCfg> = {
   restSpeed: 0.01,
   restDelta: 0.01,
 }
-const DEF_SHADOW: Required<
-  Omit<ShadowCfg, 'blur' | 'alpha' | 'offsetZ' | 'scale'>
-> & {
+const DEF_SHADOW: Required<Omit<ShadowCfg, 'blur' | 'alpha' | 'offsetZ' | 'scale'>> & {
   blur: [number, number]
   alpha: [number, number]
   offsetZ: [number, number]
@@ -141,72 +139,34 @@ export function TiltBox({
 
   const S = shadow === false ? null : { ...DEF_SHADOW, ...(shadow ?? {}) }
 
-  const tiltX = useTransform(
-    xSpring,
-    [-0.5, 0.5],
-    [-(S?.tiltStrength.x ?? 0), S?.tiltStrength.x ?? 0],
-  )
-  const tiltY = useTransform(
-    ySpring,
-    [-0.5, 0.5],
-    [-(S?.tiltStrength.y ?? 0), S?.tiltStrength.y ?? 0],
-  )
+  const tiltX = useTransform(xSpring, [-0.5, 0.5], [-(S?.tiltStrength.x ?? 0), S?.tiltStrength.x ?? 0])
+  const tiltY = useTransform(ySpring, [-0.5, 0.5], [-(S?.tiltStrength.y ?? 0), S?.tiltStrength.y ?? 0])
 
-  const shadowOffsetZ = useTransform(
-    zSpring,
-    [0, liftHeight],
-    S ? S.offsetZ : [0, 0],
-  )
-  const shadowScale = useTransform(
-    zSpring,
-    [0, liftHeight],
-    S ? S.scale : [1, 1],
-  )
+  const shadowOffsetZ = useTransform(zSpring, [0, liftHeight], S ? S.offsetZ : [0, 0])
+  const shadowScale = useTransform(zSpring, [0, liftHeight], S ? S.scale : [1, 1])
 
-  const shadowScaleX = useTransform(
-    rotateY,
-    (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt,
-  )
-  const shadowScaleY = useTransform(
-    rotateX,
-    (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt,
-  )
+  const shadowScaleX = useTransform(rotateY, (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt)
+  const shadowScaleY = useTransform(rotateX, (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt)
 
-  const originX = useTransform(
-    rotateY,
-    (v) => `${50 - (S?.originShift ?? 0) * (v / maxTilt)}%`,
-  )
-  const originY = useTransform(
-    rotateX,
-    (v) => `${50 + (S?.originShift ?? 0) * (v / maxTilt)}%`,
-  )
+  const originX = useTransform(rotateY, (v) => `${50 - (S?.originShift ?? 0) * (v / maxTilt)}%`)
+  const originY = useTransform(rotateX, (v) => `${50 + (S?.originShift ?? 0) * (v / maxTilt)}%`)
 
   const shadowOrigin = useMotionTemplate`${originX} ${originY}`
 
-  const shadowOffsetX = useTransform(
-    [tiltX, shadowOffsetZ],
-    (values: number[]) => {
-      const [tx, s] = values as [number, number]
-      const dirX = S?.direction.x ?? 0
-      return (dirX + tx) * s
-    },
-  )
+  const shadowOffsetX = useTransform([tiltX, shadowOffsetZ], (values: number[]) => {
+    const [tx, s] = values as [number, number]
+    const dirX = S?.direction.x ?? 0
+    return (dirX + tx) * s
+  })
 
-  const shadowOffsetY = useTransform(
-    [tiltY, shadowOffsetZ],
-    (values: number[]) => {
-      const [ty, s] = values as [number, number]
-      const dirY = S?.direction.y ?? 0
-      return (dirY + ty) * s
-    },
-  )
+  const shadowOffsetY = useTransform([tiltY, shadowOffsetZ], (values: number[]) => {
+    const [ty, s] = values as [number, number]
+    const dirY = S?.direction.y ?? 0
+    return (dirY + ty) * s
+  })
 
   const shadowBlur = useTransform(zSpring, [0, liftHeight], S ? S.blur : [0, 0])
-  const shadowAlpha = useTransform(
-    zSpring,
-    [0, liftHeight],
-    S ? S.alpha : [0, 0],
-  )
+  const shadowAlpha = useTransform(zSpring, [0, liftHeight], S ? S.alpha : [0, 0])
 
   //* Brightness Settings
 

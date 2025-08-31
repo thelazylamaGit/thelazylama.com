@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ScreenQuad, useTexture } from '@react-three/drei'
 import * as THREE from 'three'
 
+import raymarch from '@/shaders/raymarch.glsl'
 import vertex from '@/shaders/vertexShader.glsl'
 import fragment from '@/shaders/fragmentShader.glsl'
 
@@ -57,7 +58,7 @@ const Scene = () => {
         ref={matRef}
         uniforms={uniforms}
         vertexShader={vertex}
-        fragmentShader={fragment}
+        fragmentShader={raymarch}
         side={THREE.DoubleSide}
       />
     </ScreenQuad>

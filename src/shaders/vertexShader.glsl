@@ -1,6 +1,8 @@
 precision highp float;
 // attribute vec3 position;
 varying vec2 vUv;
+// attribute vec3 position;
+// attribute vec2 uv;
 
 void main() {
   // position is already in clip space (-1..1) on ScreenQuad
