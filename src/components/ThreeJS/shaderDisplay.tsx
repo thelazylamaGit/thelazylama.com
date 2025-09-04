@@ -67,13 +67,16 @@ const Scene = () => {
 
 function ShaderTest() {
   return (
-    <Canvas
-      style={{ width: '100vw', height: '100vh' }}
-      dpr={[1, 1]}
-      gl={{ antialias: false, depth: false, stencil: false }}
-    >
-      <Scene />
-    </Canvas>
+    <div className="pointer-events-none fixed inset-0 -z-10">
+      <Canvas
+        className="absolute inset-0"
+        style={{ width: '100vw', height: '100vh' }}
+        dpr={[1, 1]}
+        gl={{ antialias: false, depth: false, stencil: false }}
+      >
+        <Scene />
+      </Canvas>
+    </div>
   )
 }
 export default ShaderTest

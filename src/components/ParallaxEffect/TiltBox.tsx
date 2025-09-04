@@ -93,7 +93,7 @@ const DEF_SHADOW: Required<Omit<ShadowCfg, 'blur' | 'alpha' | 'offsetZ' | 'scale
 } = {
   blur: [4, 14],
   alpha: [0.15, 0.3],
-  direction: { x: 5, y: 20 },
+  direction: { x: 5, y: 10 },
   tiltStrength: { x: -15, y: -20 },
   offsetZ: [0.5, 5],
   scale: [1, 1.4],
@@ -142,8 +142,16 @@ export function TiltBox({
   const tiltX = useTransform(xSpring, [-0.5, 0.5], [-(S?.tiltStrength.x ?? 0), S?.tiltStrength.x ?? 0])
   const tiltY = useTransform(ySpring, [-0.5, 0.5], [-(S?.tiltStrength.y ?? 0), S?.tiltStrength.y ?? 0])
 
-  const shadowOffsetZ = useTransform(zSpring, [0, liftHeight], S ? S.offsetZ : [0, 0])
-  const shadowScale = useTransform(zSpring, [0, liftHeight], S ? S.scale : [1, 1])
+  const shadowOffsetZ = useTransform(zSpring, (v: number) => {
+    // v = current lift (0..liftHeight)
+    // const t = v / liftHeight // normalize 0..1
+    return 1 + v * 0.005 // 0 → scale=1, max lift → 1.4
+  })
+  const shadowScale = useTransform(zSpring, (v: number) => {
+    // v = current lift (0..liftHeight)
+    // const t = v / liftHeight // normalize 0..1
+    return 1 + v * 0.001 // 0 → scale=1, max lift → 1.4
+  })
 
   const shadowScaleX = useTransform(rotateY, (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt)
   const shadowScaleY = useTransform(rotateX, (v) => 1 + (Math.abs(v) * (S?.foreshorten ?? 0)) / maxTilt)

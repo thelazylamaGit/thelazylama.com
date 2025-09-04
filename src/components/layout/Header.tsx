@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 const Header = () => {
   return (
-    <header className="bg-gray-900 text-white">
+    <header className="z-10 bg-gray-900 text-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between p-4">
         {/* Logo / Site Name */}
         <Link href="/" className="text-xl font-bold tracking-tight hover:text-gray-300">

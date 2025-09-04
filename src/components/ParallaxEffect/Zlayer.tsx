@@ -33,7 +33,6 @@ export function ZLayer({ depth = 50, shadow, children }: Props) {
 
   return (
     <>
-      <div className="fixed inset-8 rounded-3xl bg-black" style={{ transformStyle: 'preserve-3d' }} />
       <MotionChild
         {...children.props}
         style={{
