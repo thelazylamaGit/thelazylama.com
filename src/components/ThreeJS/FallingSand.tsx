@@ -52,7 +52,7 @@ import {
 import { Html, ScreenQuad, ScreenSizer, ScreenSpace, Stats } from '@react-three/drei'
 
 function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
-  const { size, gl, pointer } = useThree()
+  const { size, gl, pointer, clock } = useThree()
   const renderer = gl as unknown as THREE.WebGPURenderer
   const canvas = renderer.domElement
 
@@ -67,19 +67,18 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     [],
   )
 
-  const src = storageTexture(tex.a).toReadWrite()
-  const dst = storageTexture(tex.b)
   //! === Settings ===
   //* Build Gui Controls
   const options = useMemo(() => {
     return {
       play: false,
-      tickRate: { value: 10, min: 1, max: 500, step: 1 },
+      tickRate: { value: 10, min: 1, max: 200, step: 1 },
       colour: {
-        value: 'white',
-        onChange: (v: string) => {
-          // zero-alloc update
-          uniforms.displayColour.value.set(v)
+        value: '#ffffff',
+        onChange: (v: unknown) => {
+          if (typeof v === 'string' && v.length) {
+            uniforms.displayColour.value.set(v)
+          }
         },
       },
       brushSize: {
@@ -99,6 +98,8 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
 
   const tickInterval = 1 / controls.tickRate
   const tick = useRef(0)
+
+  const displayTex = useMemo(() => texture(tex.a), [])
 
   //* Set Uniforms
   const uniforms = useMemo(
@@ -136,9 +137,11 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
 
       const d = length(cellCenterUV.sub(pointerCell)) // distance in "cells"
 
-      const screen = uniforms.display
+      // const screen = uniforms.display
 
-      const col = screen.sample(screenUV)
+      // const screen = texture(tex.a)
+
+      const col = displayTex.sample(screenUV)
 
       const shaded = col.r.greaterThan(0.5).select(uniforms.displayColour, vec3(0, 0, 0))
 
@@ -393,6 +396,7 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     tex.b = makeStorageTex(simW, simH)
 
     uniforms.display.value = tex.a
+    displayTex.value = tex.a
     // material.map = tex.a
 
     //* Build Compute Shader Kernels
@@ -404,10 +408,23 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     // build kernels for this size and seed once
   }, [renderer, gl])
 
+  //* Pause time when page not open
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) {
+        clock.stop() // freeze time; no accumulation while hidden
+      } else {
+        clock.start() // resets lastTime to now -> next delta is tiny
+        tick.current = 0 // drop any app-level backlog
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [clock])
   const phase = useRef(false)
 
   useFrame((state, delta) => {
-    if (!('computeAsync' in renderer) || !kernels.current) return
+    if (!('computeAsync' in renderer) || !kernels.current || document.hidden) return
 
     //? If pointer clicked
     if (pointerRef.current.down) {
@@ -430,6 +447,7 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
       renderer.computeAsync(phase.current ? kernels.current.lifeBA : kernels.current.lifeAB)
 
       uniforms.display.value = phase.current ? tex.a : tex.b
+      displayTex.value = phase.current ? tex.a : tex.b
 
       phase.current = !phase.current
 
