@@ -1,7 +1,7 @@
 'use client'
 
 import React, { act, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useThree, useFrame, Canvas, Vector2 } from '@react-three/fiber'
+import { useThree, useFrame, Canvas, Vector2, dispose } from '@react-three/fiber'
 import * as THREE from 'three/webgpu'
 import { Leva, useControls } from 'leva'
 import {
@@ -50,6 +50,7 @@ import {
   NodeAccess,
 } from 'three/tsl'
 import { Html, ScreenQuad, ScreenSizer, ScreenSpace, Stats } from '@react-three/drei'
+import { read } from 'fs'
 
 function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
   const { size, gl, pointer, clock } = useThree()
@@ -67,18 +68,41 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     [],
   )
 
+  function updateOrigin() {
+    const W = canvas.width // render target width in device px
+    const H = canvas.height // render target height in device px
+    const simW = uniforms.simSize.value.x
+    const simH = uniforms.simSize.value.y
+
+    const ox = Math.floor((W - simW) / 2)
+    const oy = Math.floor((H - simH) / 2)
+
+    uniforms.originPx.value.set(ox, oy)
+  }
+
+  const src = storageTexture(tex.a).toReadWrite()
+  const dst = storageTexture(tex.b)
   //! === Settings ===
   //* Build Gui Controls
   const options = useMemo(() => {
     return {
-      play: false,
+      play: true,
+      cellSize: { value: 8, min: 1, max: 64, step: 1, onEditEnd: (v: number) => setCellSize(v) },
       tickRate: { value: 10, min: 1, max: 200, step: 1 },
       colour: {
-        value: '#ffffff',
-        onChange: (v: unknown) => {
-          if (typeof v === 'string' && v.length) {
-            uniforms.displayColour.value.set(v)
-          }
+        value: 'white',
+        onChange: (v: string) => {
+          // zero-alloc update
+          uniforms.displayColour.value.set(v)
+        },
+      },
+      probability: {
+        value: 0.25,
+        min: 0,
+        max: 1,
+        step: 0.05,
+        onChange: (v: any) => {
+          uniforms.probability.value = 1 - Math.pow(1 - v, 1 / 4)
         },
       },
       brushSize: {
@@ -94,22 +118,23 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
   }, [])
   const controls = useControls('Life', options)
 
-  const cellSizePx = 5
-
   const tickInterval = 1 / controls.tickRate
   const tick = useRef(0)
 
-  const displayTex = useMemo(() => texture(tex.a), [])
+  const phase = useRef(false)
+  const [cellSize, setCellSize] = useState(controls.cellSize)
 
   //* Set Uniforms
   const uniforms = useMemo(
     () => ({
       simSize: uniform(ivec2(1, 1)),
-      cellSize: uniform(float(cellSizePx)),
+      cellSize: uniform(float(controls.cellSize)),
       display: uniformTexture(tex.a),
       displayColour: uniform(color('white')),
       brushSize: uniform(1),
+      originPx: uniform(vec2(0, 0)),
       frame: uniform(uint(0)),
+      probability: uniform(float(0.25)),
       pointerPos: uniform(vec2(0, 0)),
       pointerDown: uniform(bool(false)),
     }),
@@ -130,23 +155,11 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     })()
 
     mat.fragmentNode = Fn(() => {
-      const cellIndex = floor(screenUV.mul(uniforms.simSize)) // ivec2 (cell coords)
-      const cellCenterUV = cellIndex.add(0.5)
-
-      const pointerCell = uniforms.pointerPos.mul(uniforms.simSize)
-
-      const d = length(cellCenterUV.sub(pointerCell)) // distance in "cells"
-
-      // const screen = uniforms.display
-
-      // const screen = texture(tex.a)
-
-      const col = displayTex.sample(screenUV)
+      // const col = uniforms.display.sample(screenUV)
+      const col = uniforms.display.sample(screenUV)
 
       const shaded = col.r.greaterThan(0.5).select(uniforms.displayColour, vec3(0, 0, 0))
 
-      // return length(frag.sub(uniforms.pointerPos)).mul(0.001)
-      // return d.mul(0.01).pow(2)
       return shaded
     })()
 
@@ -188,6 +201,251 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
         const col = live.select(1, 0)
 
         textureStore(dst, ivec2(x, y), vec4(col, 0.0, 0.0, 1.0))
+      }),
+    [],
+  )
+
+  const sandOld = useMemo(
+    () =>
+      Fn(({ src, dst }: { src: THREE.StorageTexture; dst: THREE.StorageTexture }) => {
+        const readCell = (ix: any, iy: any) => {
+          const x = clamp(ix, 0, w.sub(1))
+          const y = clamp(iy, 0, h.sub(1))
+          return textureLoad(src, ivec2(x, y)).x.greaterThan(0.5).select(int(1), int(0))
+        }
+
+        //Cell Index
+        const w = int(uniforms.simSize.x)
+        const h = int(uniforms.simSize.y)
+        const id = int(instanceIndex)
+        const x = id.mod(w)
+        const y = id.div(w)
+
+        const atBottom = y.equal(h.sub(1))
+
+        //Directions
+        const u = y.sub(1)
+        const d = y.add(1)
+        const l = x.sub(1)
+        const r = x.add(1)
+
+        //Deterministic Random
+        const donorBit = (ix: any, iy: any) => ix.add(iy).add(int(uniforms.frame)).and(1).equal(0)
+
+        //Cell Value
+        const here = readCell(x, y)
+
+        //Material ID
+        const EMPTY = int(0)
+        const SAND = int(1)
+
+        //Future Value
+        const next = int(0)
+
+        //! Reciever Phase
+        //? Cell is empty -> check if any cells will fall here
+        If(here.equal(EMPTY), () => {
+          const up = readCell(x, u)
+
+          //? If up is sand and we're empty, become sand
+          If(up.equal(SAND), () => {
+            next.assign(SAND)
+          }).Else(() => {
+            //? Else if up isn't sand check its neighbours
+            const upLeft = readCell(l, u)
+            const upRight = readCell(r, u)
+
+            //? If top left is sand and left is blocked, it'll might fall here
+            const fillLeft = bool(false)
+            If(upLeft.equal(SAND), () => {
+              const left = readCell(l, y)
+              fillLeft.assign(left.notEqual(EMPTY))
+            })
+
+            //? If top right is sand and right is blocked, it'll might fall here
+            const fillRight = bool(false)
+            If(upRight.equal(SAND), () => {
+              const right = readCell(r, y)
+              fillRight.assign(right.notEqual(EMPTY))
+            })
+
+            //? If both top neighbours want to fall here, deterministically pick one
+            const prefRight = donorBit(l, u)
+            const prefLeft = donorBit(r, u).not()
+
+            const takeL = fillLeft.and(fillRight.not().or(prefRight))
+            const takeR = fillRight.and(fillLeft.not().or(prefLeft))
+
+            If(takeL.or(takeR), () => next.assign(SAND))
+          })
+        })
+
+        //? If cell contains sand, check if it can fall anywhere
+        If(next.equal(EMPTY).and(here.equal(SAND)), () => {
+          //? Check if we can fall straight down
+
+          If(atBottom, () => {
+            next.assign(SAND)
+          }).Else(() => {
+            const fallDown = readCell(x, d).equal(EMPTY)
+
+            //? If we can fall down cell becomes empty
+            If(fallDown, () => {}).Else(() => {
+              //? Otherwise check bottom diagonals
+              const fallLeft = readCell(l, d).equal(EMPTY)
+              const fallRight = readCell(r, d).equal(EMPTY)
+
+              //? If bottom diagonals are full we stay sand
+              If(fallLeft.not().and(fallRight.not()), () => {
+                next.assign(SAND)
+              })
+            })
+          })
+        })
+        textureStore(dst, ivec2(x, y), vec4(next, 0, 0, 1))
+      }),
+    [],
+  )
+
+  const sand = useMemo(
+    () =>
+      Fn(({ src, dst }: { src: THREE.StorageTexture; dst: THREE.StorageTexture }) => {
+        const readCell = (ix: any, iy: any) => textureLoad(src, ivec2(ix, iy)).x.greaterThan(0.5).select(int(1), int(0))
+
+        // hash→[0,1) for stochastic rules (no big helpers)
+        const rand = (ix: any, iy: any, t: any) => {
+          const z = ix
+            .mul(int(1664525))
+            .bitXor(iy.mul(int(1013904223)))
+            .bitXor(t.mul(int(69069)))
+          return z.bitAnd(int(0x7fffffff)).toFloat().div(float(2147483647))
+        }
+
+        //Cell Index
+        const w = int(uniforms.simSize.x)
+        const h = int(uniforms.simSize.y)
+
+        const evenW = w.add(int(1)).bitAnd(int(-2)) // (W+1)&~1
+        const evenH = h.add(int(1)).bitAnd(int(-2)) // (H+1)&~1
+
+        const bw = evenW.div(2)
+        const bh = evenH.div(2)
+
+        const bid = int(instanceIndex)
+        const bx = bid.mod(bw)
+        const by = bid.div(bw)
+
+        const phase = int(uniforms.frame).bitAnd(int(3)) // 0..3
+        const dx = phase.bitAnd(int(1)) // 0,1,0,1
+        const dy = phase.shiftRight(int(1)).bitXor(dx) // 0,1,1,0
+
+        // --- this block's coords
+        const x0 = bx.mul(int(2)).add(dx)
+        const y0 = by.mul(int(2)).add(dy)
+        const x1 = x0.add(1)
+        const y1 = y0.add(1)
+
+        const mA = x0.lessThan(w).and(y0.lessThan(h))
+        const mB = x1.lessThan(w).and(y0.lessThan(h))
+        const mC = x0.lessThan(w).and(y1.lessThan(h))
+        const mD = x1.lessThan(w).and(y1.lessThan(h))
+
+        // const A = readCell(x0, y0)
+        // const B = readCell(x1, y0)
+        // const C = readCell(x0, y1)
+        // const D = readCell(x1, y1)
+
+        // const A = readCell(x0, y0.lessThanEqual(h).select(int(1), int(0)))
+        // const B = readCell(x1, y0.lessThanEqual(h).select(int(1), int(0)))
+        // const C = readCell(x0, y1.lessThanEqual(h).select(int(1), int(0)))
+        // const D = readCell(x1, y1.lessThanEqual(h).select(int(1), int(0)))
+
+        const A = mA.select(readCell(x0, y0), y0.greaterThanEqual(h).select(int(1), int(0)))
+        const B = mB.select(readCell(x1, y0), y0.greaterThanEqual(h).select(int(1), int(0)))
+        const C = mC.select(readCell(x0, y1), y1.greaterThanEqual(h).select(int(1), int(0)))
+        const D = mD.select(readCell(x1, y1), y1.greaterThanEqual(h).select(int(1), int(0)))
+
+        const A2 = A.toVar()
+        const B2 = B.toVar()
+        const C2 = C.toVar()
+        const D2 = D.toVar()
+
+        // 1) Straight down where possible
+        If(A.equal(int(1)).and(C.equal(int(0))), () => {
+          A2.assign(int(0))
+          C2.assign(int(1))
+        })
+        If(B.equal(int(1)).and(D.equal(int(0))), () => {
+          B2.assign(int(0))
+          D2.assign(int(1))
+        })
+
+        // 2) If still blocked straight down, try diagonal inside the block
+        If(
+          A2.equal(int(1))
+            .and(C2.equal(int(1)))
+            .and(D2.equal(int(0))),
+          () => {
+            A2.assign(int(0))
+            D2.assign(int(1))
+          },
+        )
+        If(
+          B2.equal(int(1))
+            .and(D2.equal(int(1)))
+            .and(C2.equal(int(0))),
+          () => {
+            B2.assign(int(0))
+            C2.assign(int(1))
+          },
+        )
+
+        const p = float(uniforms.probability)
+
+        // left column full, right empty: [A=1;C=1] & [B=0;D=0]
+        const leftFull_rightEmpty = A2.equal(int(1))
+          .and(C2.equal(int(1)))
+          .and(B2.equal(int(0)))
+          .and(D2.equal(int(0)))
+
+        If(leftFull_rightEmpty, () => {
+          // choose topple direction (alternate a bit with coords+phase)
+          const r = rand(x0.add(y0), x1.add(y1), phase)
+          If(r.lessThan(p), () => {
+            // topple to the right column: A2,C2 → 0; B2,D2 → 1
+            A2.assign(int(0))
+            C2.assign(int(0))
+            B2.assign(int(1))
+            D2.assign(int(1))
+          })
+        })
+
+        // right column full, left empty
+        const rightFull_leftEmpty = B2.equal(int(1))
+          .and(D2.equal(int(1)))
+          .and(A2.equal(int(0)))
+          .and(C2.equal(int(0)))
+
+        If(rightFull_leftEmpty, () => {
+          const r = rand(x0.add(y0).add(int(17)), x1.add(y1).add(int(53)), phase)
+          If(r.lessThan(p), () => {
+            // topple to the left column
+            B2.assign(int(0))
+            D2.assign(int(0))
+            A2.assign(int(1))
+            C2.assign(int(1))
+          })
+        })
+
+        A2.assign(mA.select(A2, y0.greaterThanEqual(h).select(int(1), int(0))))
+        B2.assign(mB.select(B2, y0.greaterThanEqual(h).select(int(1), int(0))))
+        C2.assign(mC.select(C2, y1.greaterThanEqual(h).select(int(1), int(0))))
+        D2.assign(mD.select(D2, y1.greaterThanEqual(h).select(int(1), int(0))))
+
+        textureStore(dst, ivec2(x0, y0), vec4(A2.toFloat(), 0, 0, 1))
+        textureStore(dst, ivec2(x1, y0), vec4(B2.toFloat(), 0, 0, 1))
+        textureStore(dst, ivec2(x0, y1), vec4(C2.toFloat(), 0, 0, 1))
+        textureStore(dst, ivec2(x1, y1), vec4(D2.toFloat(), 0, 0, 1))
       }),
     [],
   )
@@ -235,178 +493,74 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
   const buildKernels = useCallback((W: number, H: number) => {
     const cells = W * H
 
-    const lifeAB = life({ src: tex.a, dst: tex.b }).compute(cells)
-    const lifeBA = life({ src: tex.b, dst: tex.a }).compute(cells)
+    const W2 = (W + 1) & ~1
+    const H2 = (H + 1) & ~1
+    const blocks = (W2 / 2) * (H2 / 2)
 
     const paintA = paintLife({ src: tex.a }).compute(cells)
     const paintB = paintLife({ src: tex.b }).compute(cells)
 
-    const cellUpdate = Fn(() => {
-      const w = int(uniforms.simSize.x)
-      const h = int(uniforms.simSize.y)
-      const x = instanceIndex.mod(w)
-      const y = instanceIndex.div(w)
+    const lifeAB = life({ src: tex.a, dst: tex.b }).compute(cells)
+    const lifeBA = life({ src: tex.b, dst: tex.a }).compute(cells)
 
-      const xy = ivec2(x, y)
+    // const sandAB = sand({ src: tex.a, dst: tex.b }).compute(cells)
+    // const sandBA = sand({ src: tex.b, dst: tex.a }).compute(cells)
 
-      const u = y.sub(1).max(0)
-      const d = y.add(1).min(h.sub(1))
-      const l = x.sub(1).max(0)
-      const r = x.add(1).min(w.sub(1))
-
-      const donorBit = (ix: any, iy: any) => ix.add(iy).add(int(uniforms.frame)).and(1).equal(0)
-
-      const here = textureLoad(tex.a, xy).x
-      // const down = textureLoad(src.value, ivec2(x, d)).x
-      // const left = textureLoad(src.value, ivec2(l, y)).x
-      // const right = textureLoad(src.value, ivec2(r, y)).x
-      // const downLeft = textureLoad(src.value, ivec2(l, d)).x
-      // const downRight = textureLoad(src.value, ivec2(r, d)).x
-
-      const EMPTY = float(0)
-      const SAND = float(1)
-
-      const next = float(0).toVar()
-
-      //! Cell is empty -> check if any cells will fall here
-      If(here.equal(EMPTY), () => {
-        const up = textureLoad(tex.a, ivec2(x, u)).x // check above cell value
-
-        //If up is sand and we're empty, assign next = sand
-        If(up.equal(SAND), () => {
-          next.assign(SAND)
-        }).Else(() => {
-          //Else if up not equal sand, check if upper diagonals are sand
-          const upLeft = textureLoad(tex.a, ivec2(l, u)).x // above-left
-          const upRight = textureLoad(tex.a, ivec2(r, u)).x // above-right
-
-          //Check if top left can't fall down and wants to fall here
-          const fillLeft = bool(false).toVar()
-          If(upLeft.equal(SAND), () => {
-            const downLeft = textureLoad(tex.a, ivec2(l, d)).x
-            fillLeft.assign(downLeft.notEqual(EMPTY))
-          })
-
-          //Check if top right can't fall down and wants to fall here
-          const fillRight = bool(false).toVar()
-          If(upRight.equal(SAND), () => {
-            const downRight = textureLoad(tex.a, ivec2(r, d)).x
-            fillRight.assign(downRight.notEqual(EMPTY))
-          })
-
-          //If both upper diagonals want to fall here, deterministically pick one.
-          const prefRight = donorBit(l, u)
-          const prefLeft = donorBit(r, u).not()
-
-          const takeL = fillLeft.and(fillRight.not().or(prefRight))
-          const takeR = fillRight.and(fillLeft.not().or(prefLeft))
-
-          If(takeL.or(takeR), () => next.assign(SAND))
-        })
-      })
-
-      //! Cell contains sand -> Check if it can fall anywhere
-      If(next.equal(EMPTY).and(here.equal(SAND)), () => {
-        //Check below cell
-        const fallDown = textureLoad(tex.a, ivec2(x, d)).x.equal(EMPTY)
-
-        //If below cell full, check bottom diagonal cells
-        If(fallDown.not(), () => {
-          const fallLeft = textureLoad(tex.a, ivec2(l, d)).x.equal(EMPTY)
-          const fallRight = textureLoad(tex.a, ivec2(r, d)).x.equal(EMPTY)
-
-          //If bottom diagonal cells also fall, cell stays sand
-          If(fallLeft.not().and(fallRight.not()), () => {
-            next.assign(SAND)
-          })
-        })
-      })
-
-      textureStore(tex.b, xy, vec4(next, 0, 0, 1))
-
-      // const val = float(x).div(float(w))
-      // textureStore(dst.value, ivec2(x, y), vec4(val, 0.0, 0.0, 1.0))
-    })().compute(cells)
+    const sandAB = sand({ src: tex.a, dst: tex.b }).compute(blocks)
+    const sandBA = sand({ src: tex.b, dst: tex.a }).compute(blocks)
 
     //Return Kernels
-    return { paintA, paintB, cellUpdate, lifeAB, lifeBA }
+    return { paintA, paintB, lifeAB, lifeBA, sandAB, sandBA }
   }, [])
 
   const kernels = useRef<ReturnType<typeof buildKernels> | null>(null)
 
   //* Update Canvas Size
   // useEffect(() => {
-  //   const canvas = renderer.domElement
-  //   const context = renderer.getContext() as any
-  //   const gpuDevice: GPUDevice | undefined = context.device
-  //   const maxTex = gpuDevice?.limits?.maxTextureDimension2D ?? 8192
-  //   const observer = new ResizeObserver((entries) => {
-  //     const entry = entries[0]
-  //     const dp = entry.devicePixelContentBoxSize?.[0]
-  //     const cb = entry.contentBoxSize?.[0]
-
-  //     let w = dp?.inlineSize || cb.inlineSize * devicePixelRatio
-  //     let h = dp?.blockSize || cb.blockSize * devicePixelRatio
-
-  //     w = Math.min(Math.floor(w * scale), maxTex)
-  //     h = Math.min(Math.floor(h * scale), maxTex)
-
-  //     uniforms.simSize.value.set(w, h)
-
-  //     tex.a = makeStorageTex(w, h)
-  //     tex.b = makeStorageTex(w, h)
-
-  //     kernels.current = buildKernels(w, h)
+  //   const observer = new ResizeObserver(() => {
+  //     updateOrigin()
   //   })
 
-  //   try {
-  //     observer.observe(canvas, { box: 'device-pixel-content-box' })
-  //   } catch {
-  //     observer.observe(canvas, { box: 'content-box' })
-  //   }
+  //   observer.observe(canvas) // canvas is renderer.domElement
   //   return () => observer.disconnect()
-  // }, [canvas, gl, renderer])
+  // }, [canvas])
 
-  //* Initialise Simulation on start
+  //* User Input
   useEffect(() => {
-    if (!('computeAsync' in renderer)) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+    }
 
-    // console.log(navigator.gpu?.wgslLanguageFeatures?.has('readonly_and_readwrite_storage_textures'))
+    const onPointerDown = (e: PointerEvent) => {
+      // capture so we keep events even if the pointer leaves
+      ;(e.target as Element).setPointerCapture?.(e.pointerId)
 
-    const canvas = renderer.domElement
-    const cssW = canvas.clientWidth
-    const cssH = canvas.clientHeight
-    const dpr = devicePixelRatio || 1
-    const canvasW = Math.max(1, Math.floor(cssW * dpr))
-    const canvasH = Math.max(1, Math.floor(cssH * dpr))
+      if (e.button === 0) {
+        uniforms.pointerDown.value = true
+      }
+    }
 
-    //* Set Canvas Size (pixels)
-    canvasSize.current = { x: canvasW, y: canvasH }
+    const onPointerMove = (e: PointerEvent) => {}
 
-    //* Set Sim Size (cells)
-    const simW = Math.max(1, Math.floor(canvasW / cellSizePx))
-    const simH = Math.max(1, Math.floor(canvasH / cellSizePx))
-    uniforms.simSize.value.set(simW, simH)
+    const onPointerUpOrLeave = (e: PointerEvent) => {
+      if (e.button === 0) {
+        uniforms.pointerDown.value = false
+      }
+    }
 
-    //* Set Cell Size
-    uniforms.cellSize.value = cellSizePx
-
-    //* Create Textures
-    tex.a = makeStorageTex(simW, simH)
-    tex.b = makeStorageTex(simW, simH)
-
-    uniforms.display.value = tex.a
-    displayTex.value = tex.a
-    // material.map = tex.a
-
-    //* Build Compute Shader Kernels
-    kernels.current = buildKernels(simW, simH)
-
-    console.log('Init')
-    // if (kernels.current) renderer.compute(kernels.current!.seed)
-
-    // build kernels for this size and seed once
-  }, [renderer, gl])
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    canvas.addEventListener('pointerdown', onPointerDown)
+    canvas.addEventListener('pointermove', onPointerMove)
+    canvas.addEventListener('pointerup', onPointerUpOrLeave)
+    canvas.addEventListener('pointerleave', onPointerUpOrLeave)
+    return () => {
+      canvas.removeEventListener('wheel', onWheel)
+      canvas.removeEventListener('pointerdown', onPointerDown)
+      canvas.removeEventListener('pointermove', onPointerMove)
+      canvas.removeEventListener('pointerup', onPointerUpOrLeave)
+      canvas.removeEventListener('pointerleave', onPointerUpOrLeave)
+    }
+  }, [canvas])
 
   //* Pause time when page not open
   useEffect(() => {
@@ -421,14 +575,55 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [clock])
-  const phase = useRef(false)
+
+  //* Initialise Simulation
+  useEffect(() => {
+    if (!('computeAsync' in renderer)) return
+
+    const cssW = canvas.clientWidth
+    const cssH = canvas.clientHeight
+    const dpr = devicePixelRatio || 1
+    const canvasW = Math.max(1, Math.floor(cssW * dpr))
+    const canvasH = Math.max(1, Math.floor(cssH * dpr))
+
+    //* Set Canvas Size (pixels)
+    canvasSize.current = { x: canvasW, y: canvasH }
+
+    //* Set Sim Size (cells)
+    const simW = Math.max(1, Math.floor(canvasW / cellSize))
+    const simH = Math.max(1, Math.floor(canvasH / cellSize))
+
+    uniforms.simSize.value.set(simW, simH)
+
+    const originU = ((canvasW - simW) * 0.5) / canvasW
+    const originV = ((canvasH - simH) * 0.5) / canvasH
+    uniforms.originPx.value.set(originU, originV)
+
+    //* Set Cell Size
+    uniforms.cellSize.value = cellSize
+
+    tex.a?.dispose()
+    tex.b?.dispose()
+
+    //* Create Textures
+    tex.a = makeStorageTex(simW, simH)
+    tex.b = makeStorageTex(simW, simH)
+    uniforms.display.value = tex.a
+
+    //* Build Compute Shader Kernels
+    kernels.current = buildKernels(simW, simH)
+
+    console.log('Init')
+  }, [renderer, cellSize])
 
   useFrame((state, delta) => {
     if (!('computeAsync' in renderer) || !kernels.current || document.hidden) return
 
+    uniforms.frame.value++
+
     //? If pointer clicked
-    if (pointerRef.current.down) {
-      //* Transform Pointer Coordinates (flips y)
+    if (uniforms.pointerDown.value) {
+      //* Transform to canvas pixel coordinates (centre origin to top left origin, [-1, 1] to [0, 1])
       const pointerPos = {
         x: (pointer.x + 1) * 0.5 * canvasSize.current.x,
         y: (-pointer.y + 1) * 0.5 * canvasSize.current.y,
@@ -444,12 +639,17 @@ function FallingSand({ pointerRef }: { pointerRef: React.RefObject<any> }) {
 
     tick.current += delta
     if (tick.current >= tickInterval) {
-      renderer.computeAsync(phase.current ? kernels.current.lifeBA : kernels.current.lifeAB)
+      // renderer.computeAsync(phase.current ? kernels.current.lifeBA : kernels.current.lifeAB)
+
+      // renderer.computeAsync(phase.current ? kernels.current.sandBA : kernels.current.sandAB)
+
+      for (let i = 0; i < 4; i++) {
+        renderer.computeAsync(phase.current ? kernels.current.sandBA : kernels.current.sandAB)
+        uniforms.frame.value++ // advances phase: 0→1→2→3
+        phase.current = !phase.current
+      }
 
       uniforms.display.value = phase.current ? tex.a : tex.b
-      displayTex.value = phase.current ? tex.a : tex.b
-
-      phase.current = !phase.current
 
       tick.current -= tickInterval
     }
@@ -501,15 +701,6 @@ export default function SandCanvas() {
             : undefined
         }
         dpr={[1, 2]}
-        onPointerDown={(e) => {
-          pointerRef.current.down = true
-        }}
-        onPointerUp={() => {
-          pointerRef.current.down = false
-        }}
-        onPointerLeave={(e) => {
-          pointerRef.current.down = false
-        }}
       >
         <FallingSand pointerRef={pointerRef} />
       </Canvas>
